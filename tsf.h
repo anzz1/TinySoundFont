@@ -2006,15 +2006,15 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 		case 120 /*ALL_SOUND_OFF*/   : tsf_channel_sounds_off_all(f, channel); return 1;
 		case 123 /*ALL_NOTES_OFF*/   : tsf_channel_note_off_all(f, channel);   return 1;
 		case 121 /*ALL_CTRL_OFF*/    :
-			c->midiVolume = c->midiExpression = 16383;
+			c->midiExpression = 16383;
 			c->midiPan = 8192;
 			c->bank = 0;
 			c->midiRPN = 0xFFFF;
 			c->midiData = 0;
-			tsf_channel_set_volume(f, channel, 1.0f);
 			tsf_channel_set_pan(f, channel, 0.5f);
 			tsf_channel_set_pitchrange(f, channel, 2.0f);
 			tsf_channel_set_tuning(f, channel, 0);
+			tsf_channel_set_sustain(f, channel, 0);
 			tsf_channel_set_pitchwheel(f, channel, 8192);
 			return 1;
 	}

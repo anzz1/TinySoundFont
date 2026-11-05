@@ -1,4 +1,4 @@
-/* TinyMidiLoader - v0.7 - Minimalistic midi parsing library - https://github.com/schellingb/TinySoundFont
+/* TinyMidiLoader2 - v2.00 - Minimalistic midi parsing library
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -15,7 +15,7 @@
 
    LICENSE (ZLIB)
 
-   Copyright (C) 2017, 2018, 2020 Bernhard Schelling
+   Copyright (C) 2017, 2018, 2020 Bernhard Schelling (https://github.com/schellingb/TinySoundFont)
 
    This software is provided 'as-is', without any express or implied
    warranty.  In no event will the authors be held liable for any damages
@@ -52,7 +52,11 @@ extern "C" {
 // Channel message type
 enum TMLMessageType
 {
-	TML_NOTE_OFF = 0x80, TML_NOTE_ON = 0x90, TML_KEY_PRESSURE = 0xA0, TML_CONTROL_CHANGE = 0xB0, TML_PROGRAM_CHANGE = 0xC0, TML_CHANNEL_PRESSURE = 0xD0, TML_PITCH_BEND = 0xE0, TML_SET_TEMPO = 0x51
+	TML_NOTE_OFF = 0x80, TML_NOTE_ON = 0x90, TML_KEY_PRESSURE = 0xA0, TML_CONTROL_CHANGE = 0xB0, TML_PROGRAM_CHANGE = 0xC0, TML_CHANNEL_PRESSURE = 0xD0, TML_PITCH_BEND = 0xE0, TML_SET_TEMPO = 0x51,
+	TML_GM_RESET = 0x7E, // General MIDI System On (F0 7E <device> 09 01 F7)
+	TML_GM2_RESET = 0x7D, // General MIDI 2 System On (F0 7E <device> 09 03 F7)
+	TML_GS_RESET = 0x41, // Roland GS Reset (F0 41 <device> 42 12 40 00 7F 00 41 F7)
+	TML_XG_RESET = 0x43  // Yamaha XG System On (F0 43 1n 4C 00 00 7E 00 F7)
 };
 
 // Midi controller numbers
@@ -225,7 +229,7 @@ TMLDEF tml_message* tml_load_filename(const char* filename)
 #endif
 
 struct tml_stream_memory { const char* buffer; unsigned int total, pos; };
-static int tml_stream_memory_read(struct tml_stream_memory* m, void* ptr, unsigned int size) { if (size > m->total - m->pos) size = m->total - m->pos; TML_MEMCPY(ptr, m->buffer+m->pos, size); m->pos += size; return size; }
+static int tml_stream_memory_read(struct tml_stream_memory* m, void* ptr, unsigned int size) { if (size > m->total - m->pos) size = m->total - m->pos; if (size) TML_MEMCPY(ptr, m->buffer+m->pos, size); m->pos += size; return size; }
 TMLDEF struct tml_message* tml_load_memory(const void* buffer, int size)
 {
 	struct tml_stream stream = { TML_NULL, (int(*)(void*,void*,unsigned int))&tml_stream_memory_read };
@@ -250,7 +254,7 @@ struct tml_tempomsg
 
 struct tml_parser
 {
-	unsigned char *buf, *buf_end; 
+	unsigned char *buf, *buf_end;
 	int last_status, message_array_size, message_count;
 };
 
@@ -300,19 +304,31 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 	if (p->message_array_size == p->message_count)
 	{
 		//start allocated memory size of message array at 64, double each time until 8192, then add 1024 entries until done
-		p->message_array_size += (!p->message_array_size ? 64 : (p->message_array_size > 4096 ? 1024 : p->message_array_size));
-		*f = (tml_message*)TML_REALLOC(*f, p->message_array_size * sizeof(tml_message));
-		if (!*f) { TML_ERROR("Out of memory"); return -1; }
+		int new_size = p->message_array_size + (!p->message_array_size ? 64 : (p->message_array_size > 4096 ? 1024 : p->message_array_size));
+		tml_message* new_messages = (tml_message*)TML_REALLOC(*f, new_size * sizeof(tml_message));
+		if (!new_messages) { TML_ERROR("Out of memory"); return -1; }
+		*f = new_messages;
+		p->message_array_size = new_size;
 	}
 	evt = *f + p->message_count;
 
 	//check what message we have
 	if ((status == TML_SYSEX) || (status == TML_EOX)) //sysex
 	{
-		//sysex messages are not handled
-		p->buf += tml_readvariablelength(p);
-		if (p->buf > p->buf_end) { TML_WARN("Unexpected end of file"); p->buf = p->buf_end; return -1; }
+		//sysex messages are not handled except the GM, GM2, GS and XG reset messages
+		int len = tml_readvariablelength(p);
+		const unsigned char* d = p->buf;
+		if (len < 0 || len > p->buf_end - p->buf) { TML_WARN("Unexpected end of file"); p->buf = p->buf_end; return -1; }
+		p->buf += len;
 		evt->type = 0;
+		if (status == TML_SYSEX) //the data following the F0 status byte
+		{
+			if      (len >= 4 && d[0] == 0x7E && d[2] == 0x09 && d[3] == 0x01) evt->type = TML_GM_RESET; //universal non-realtime, general MIDI system on
+			else if (len >= 4 && d[0] == 0x7E && d[2] == 0x09 && d[3] == 0x03) evt->type = TML_GM2_RESET; //universal non-realtime, general MIDI 2 system on
+			else if (len >= 8 && d[0] == 0x41 && d[2] == 0x42 && d[3] == 0x12 && d[4] == 0x40 && d[5] == 0x00 && d[6] == 0x7F && d[7] == 0x00) evt->type = TML_GS_RESET; //Roland, device, GS model, data set to the reset address
+			else if (len >= 7 && d[0] == 0x43 && (d[1] & 0xF0) == 0x10 && d[2] == 0x4C && d[3] == 0x00 && d[4] == 0x00 && d[5] == 0x7E && d[6] == 0x00) evt->type = TML_XG_RESET; //Yamaha, XG model, system on
+			evt->channel = evt->key = evt->velocity = 0;
+		}
 	}
 	else if (status == 0xFF) //meta events
 	{
@@ -343,7 +359,7 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 	}
 	else //channel message
 	{
-		int param; 
+		int param;
 		if ((param = tml_readbyte(p)) < 0) { TML_WARN("Unexpected end of file"); return -1; }
 		evt->key = (param & 0x7f);
 		evt->channel = (status & 0x0f);
@@ -393,10 +409,11 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 	if (midi_header[12] & 0x80) { TML_ERROR("File uses unsupported SMPTE timing"); return messages; }
 	num_tracks = (int)(midi_header[10] << 8) | midi_header[11];
 	division = (int)(midi_header[12] << 8) | midi_header[13]; //division is ticks per beat (quarter-note)
-	if (num_tracks <= 0 && division <= 0) { TML_ERROR("Doesn't look like a MIDI file: invalid track or division values"); return messages; }
+	if (num_tracks <= 0 || division <= 0) { TML_ERROR("Doesn't look like a MIDI file: invalid track or division values"); return messages; }
 
 	// Allocate temporary tracks array for parsing
 	tracks = (struct tml_track*)TML_MALLOC(sizeof(struct tml_track) * num_tracks);
+	if (!tracks) { TML_ERROR("Out of memory"); return messages; }
 	tracksEnd = &tracks[num_tracks];
 	for (t = tracks; t != tracksEnd; t++) t->Idx = t->End = t->Ticks = 0;
 
@@ -410,9 +427,14 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 			{ TML_WARN("Invalid MTrk header"); break; }
 
 		// Get size of track data and read into buffer (allocate bigger buffer if needed)
-		track_length = track_header[7] | (track_header[6] << 8) | (track_header[5] << 16) | (track_header[4] << 24);
+		track_length = (int)((unsigned)track_header[7] | ((unsigned)track_header[6] << 8) | ((unsigned)track_header[5] << 16) | ((unsigned)track_header[4] << 24));
 		if (track_length < 0) { TML_WARN("Invalid MTrk header"); break; }
-		if (trackbufsize < track_length) { TML_FREE(trackbuf); trackbuf = (unsigned char*)TML_MALLOC(trackbufsize = track_length); }
+		if (trackbufsize < track_length)
+		{
+			TML_FREE(trackbuf);
+			trackbuf = (unsigned char*)TML_MALLOC(trackbufsize = track_length);
+			if (!trackbuf) { TML_ERROR("Out of memory"); trackbufsize = 0; break; }
+		}
 		if (stream->read(stream->data, trackbuf, track_length) != track_length) { TML_WARN("Unexpected end of file"); break; }
 
 		t->Idx = p.message_count;

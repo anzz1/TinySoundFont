@@ -1,5 +1,7 @@
-# TinySoundFont
+# TinySoundFont2
 SoundFont2 synthesizer library in a single C/C++ file
+
+TinySoundFont2 is a continuation of the original [TinySoundFont](https://github.com/schellingb/TinySoundFont) project: fixing bugs, optimizing it, expanding it to 100% GM1 compatibility, full support of the [General MIDI Level 1](https://midi.org/midi-1-0-detailed-specification) and [SoundFont 2.01](https://www.synthfont.com/SFSPEC21.PDF) technical specifications, including support of all MIDI CC messages, SoundFont generators, modulators, and effects.
 
 ## Overview
 
@@ -24,9 +26,11 @@ The library code is based on [SFZero by Steve Folta](https://github.com/stevefol
 
 ## Documentation
 
-The API documentation can be found on [top of the library source code](https://github.com/schellingb/TinySoundFont/blob/master/tsf.h).
+The API documentation can be found on [top of the library source code](https://github.com/anzz1/TinySoundFont/blob/master/tsf.h).
 
-There are also [examples available](https://github.com/schellingb/TinySoundFont/tree/master/examples) which come with a sample SoundFont file and build and play sound on Win32, Win64, Linux and MacOSX with no further dependencies.
+There are also [examples available](https://github.com/anzz1/TinySoundFont/tree/master/examples) which come with a sample SoundFont file and build and play sound on Win32, Win64, Linux and MacOSX with no further dependencies.
+
+In-depth technical details available in [TECHNICAL_DETAILS.md](https://github.com/anzz1/TinySoundFont/tree/master/TECHNICAL_DETAILS.md).
 
 ## Dependencies
 

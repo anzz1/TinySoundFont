@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.02 - SoundFont2 synthesizer
+/* TinySoundFont2 - v2.02 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION

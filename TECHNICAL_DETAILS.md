@@ -151,7 +151,8 @@ All of them are implemented except for two deliberate deviations:
 
 ## Rendering and performance
 
-- **Interpolation:** linear, with the playback position as a 32.32 fixed-point number.
+- **Sample data:** kept as 16-bit integers like as in the font, half the memory of floats.
+- **Interpolation:** linear, with the playback position as a 32.32 fixed-point number. It runs in integers with a 15-bit fraction and converts only the result to float (the 1/2^30 scale is part of the gains), which is faster than converting both samples. Compared with interpolating in floats, the difference is about −100 dB, below the 16-bit rounding noise of the samples themselves.
 - **Block processing:** envelopes, LFOs, filter coefficients and pitch are updated every 64 samples (`TSF_RENDER_EFFECTSAMPLEBLOCK`). The gain ramps linearly within each block, which avoids zipper noise and clicks.
 - **Silent blocks:** during an envelope delay or at zero volume, a voice that bypasses the filter skips interpolation and only advances its position.
 - **Inner loop:** within a block, the samples that can't reach the loop end or the sample end are rendered as one run without the end test and the loop wrap. There is one loop with the filter and one without, so voices that bypass the filter don't test for it per sample. A step longer than the loop (a short loop played very high) still wraps into the loop.
@@ -170,6 +171,7 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 - **Damaged files:** a sample whose stream can't be opened, or whose byte range lies outside the data, is left out (an SFO whose single stream can't be opened fails to load). A truncated stream plays what decodes; regions whose samples lie past that are dropped.
 - **RIFF padding:** a chunk of odd size, common for compressed data, is followed by a pad byte as RIFF specifies; files written without it (as SFOTool does) load too.
 - **Both stb_vorbis APIs** work: the default pull API and the pushdata-only build (`STB_VORBIS_NO_PULLDATA_API`).
+- **Sample data:** compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
 
 ## API arguments
 
@@ -199,4 +201,5 @@ The implementation was checked as follows:
 - **Compressed fonts:** TimGM6mb was converted to SFO and to SF3 (all samples, and every other one, compressed). Every region's sample matched the original in length and loop points, the GM test files rendered at the original's level, and damaged and fuzzed files loaded or failed cleanly under the sanitizers, with both stb_vorbis APIs.
 - **Big-endian:** the GM test files rendered on an emulated big-endian machine (s390x under QEMU) with .sf2, .sfo and .sf3 fonts match the little-endian output within float rounding, and the unit tests pass there.
 - **FluidSynth comparison:** the GM test files were rendered per channel with TimGM6mb in both synths (linear interpolation, no effects). The median levels of every channel agree within about 1 dB, and the stereo balance matches.
+- **Memory:** every allocation counted through `TSF_MALLOC`/`TSF_REALLOC`/`TSF_FREE` and checked that `tsf_close` frees all of it. Playing the GM test files used 3.4 MB of heap with gm.sf2 and 6.0 MB with TimGM6mb, and the whole process 6–9 MB, against 24–28 MB for FluidSynth.
 - **Speed:** on the test machine, tsf rendered the GM files with gm.sf2 3–6× faster than FluidSynth 2.3 with linear interpolation (one core, 44.1 kHz), and with TimGM6mb, which filters almost every voice, 1.4–2× faster.

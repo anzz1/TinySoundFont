@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.00 - SoundFont2 synthesizer
+/* TinySoundFont2 - v2.01 - SoundFont2 synthesizer
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -532,7 +532,7 @@ static void tsf_hydra_read_shdr(struct tsf_hydra_shdr* i, struct tsf_stream* str
 
 struct tsf_riffchunk { tsf_fourcc id; tsf_u32 size; };
 struct tsf_envelope { float delay, attack, hold, decay, sustain, release, keynumToHold, keynumToDecay; };
-struct tsf_voice_envelope { unsigned char segment, segmentIsExponential : 1, isAmpEnv : 1; short midiVelocity; float level, slope; int samplesUntilNextSegment; struct tsf_envelope parameters; };
+struct tsf_voice_envelope { unsigned char segment, segmentIsExponential : 1, isAmpEnv : 1; short midiVelocity; float level, slope, slopeBlock; int samplesUntilNextSegment; struct tsf_envelope parameters; };
 struct tsf_voice_lowpass { double QInv, gain, a0, a1, b1, b2, z1, z2; TSF_BOOL active, resonant; };
 struct tsf_voice_lfo { int samplesUntil; float level, delta; };
 
@@ -1342,6 +1342,7 @@ static void tsf_voice_envelope_nextsegment(struct tsf_voice_envelope* e, short a
 					// Linear in dB, the decay time is the time for a 100 dB drop (8.1.2 #36), so it ends early at the sustain level
 					float dbSlope = -TSF_ENV_LN_100DB / e->samplesUntilNextSegment;
 					e->slope = TSF_EXPF(dbSlope);
+					e->slopeBlock = TSF_POWF(e->slope, (float)TSF_RENDER_EFFECTSAMPLEBLOCK); // the factor of a whole block, computed once
 					e->segmentIsExponential = TSF_TRUE;
 					if (e->parameters.sustain > 0.0f)
 					{
@@ -1376,6 +1377,7 @@ static void tsf_voice_envelope_nextsegment(struct tsf_voice_envelope* e, short a
 				// Linear in dB, the release time is the time for a 100 dB drop (8.1.2 #38); done once 100 dB below full scale
 				float dbSlope = -TSF_ENV_LN_100DB / e->samplesUntilNextSegment;
 				e->slope = TSF_EXPF(dbSlope);
+				e->slopeBlock = TSF_POWF(e->slope, (float)TSF_RENDER_EFFECTSAMPLEBLOCK);
 				e->segmentIsExponential = TSF_TRUE;
 				e->samplesUntilNextSegment = (e->level > TSF_ENV_SILENCE ? (int)(TSF_LOG(TSF_ENV_SILENCE / e->level) / dbSlope) + 1 : 0);
 			}
@@ -1422,7 +1424,7 @@ static void tsf_voice_envelope_process(struct tsf_voice_envelope* e, int numSamp
 		if (step > numSamples) step = numSamples;
 		if (e->slope)
 		{
-			if (e->segmentIsExponential) e->level *= TSF_POWF(e->slope, (float)step);
+			if (e->segmentIsExponential) e->level *= (step == TSF_RENDER_EFFECTSAMPLEBLOCK ? e->slopeBlock : TSF_POWF(e->slope, (float)step));
 			else e->level += e->slope * (float)step;
 		}
 		e->samplesUntilNextSegment -= step; numSamples -= step;
@@ -1686,9 +1688,8 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 	{ \
 		int run = blockSamples; \
 		if (phase + phaseStep * (tsf_u64)blockSamples > phaseSafe) run = (phase < phaseSafe && phaseStep ? (int)((phaseSafe - phase - 1) / phaseStep) + 1 : 0); \
-		if (!run) run = 1; \
-		blockSamples -= run; \
-		while (run--) TSF_VOICE_SAMPLE(FILTER, OUTPUT, (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1)) \
+		if (run) { blockSamples -= run; while (run--) TSF_VOICE_SAMPLE(FILTER, OUTPUT, pos + 1) } \
+		else { blockSamples--; TSF_VOICE_SAMPLE(FILTER, OUTPUT, (pos >= tmpLoopEnd && isLooping ? tmpLoopStart : pos + 1)) } \
 		if (phase >= phaseLoopEnd && isLooping) /* wrap into the loop, also when a step is longer than the loop */ \
 			phase = (phase - phaseLoopEnd < phaseLoopLength ? phase - phaseLoopLength : phaseLoopEnd - phaseLoopLength + (phase - phaseLoopEnd) % phaseLoopLength); \
 	}
@@ -1943,14 +1944,26 @@ static void tsf_fx_process(struct tsf_fx* e, const float* ci, const float* ri, f
 			float s0 = e->combStore[j * 4], s1 = e->combStore[j * 4 + 1], s2 = e->combStore[j * 4 + 2], s3 = e->combStore[j * 4 + 3];
 			unsigned int p0 = b[0].pos, p1 = b[1].pos, p2 = b[2].pos, p3 = b[3].pos;
 			const float* in = ri + j;
-			for (i = 0; i != n; i++)
+			for (i = 0; i != n;)
 			{
-				float x = in[i * 2], y0 = d0[p0], y1 = d1[p1], y2 = d2[p2], y3 = d3[p3];
-				s0 = y0 * undamp + s0 * damp; d0[p0] = x + s0 * feedback; if (++p0 == b[0].length) p0 = 0;
-				s1 = y1 * undamp + s1 * damp; d1[p1] = x + s1 * feedback; if (++p1 == b[1].length) p1 = 0;
-				s2 = y2 * undamp + s2 * damp; d2[p2] = x + s2 * feedback; if (++p2 == b[2].length) p2 = 0;
-				s3 = y3 * undamp + s3 * damp; d3[p3] = x + s3 * feedback; if (++p3 == b[3].length) p3 = 0;
-				sum[i] = (((sum[i] + y0) + y1) + y2) + y3;
+				unsigned int run = (unsigned int)(n - i), k;
+				if (b[0].length - p0 < run) run = b[0].length - p0;
+				if (b[1].length - p1 < run) run = b[1].length - p1;
+				if (b[2].length - p2 < run) run = b[2].length - p2;
+				if (b[3].length - p3 < run) run = b[3].length - p3;
+				for (k = 0; k != run; k++, i++, p0++, p1++, p2++, p3++)
+				{
+					float x = in[i * 2], y0 = d0[p0], y1 = d1[p1], y2 = d2[p2], y3 = d3[p3];
+					s0 = y0 * undamp + s0 * damp; d0[p0] = x + s0 * feedback;
+					s1 = y1 * undamp + s1 * damp; d1[p1] = x + s1 * feedback;
+					s2 = y2 * undamp + s2 * damp; d2[p2] = x + s2 * feedback;
+					s3 = y3 * undamp + s3 * damp; d3[p3] = x + s3 * feedback;
+					sum[i] = (((sum[i] + y0) + y1) + y2) + y3;
+				}
+				if (p0 == b[0].length) p0 = 0;
+				if (p1 == b[1].length) p1 = 0;
+				if (p2 == b[2].length) p2 = 0;
+				if (p3 == b[3].length) p3 = 0;
 			}
 			e->combStore[j * 4] = s0; e->combStore[j * 4 + 1] = s1; e->combStore[j * 4 + 2] = s2; e->combStore[j * 4 + 3] = s3;
 			b[0].pos = p0; b[1].pos = p1; b[2].pos = p2; b[3].pos = p3;
@@ -1961,19 +1974,23 @@ static void tsf_fx_process(struct tsf_fx* e, const float* ci, const float* ri, f
 			struct tsf_fx_line* b = &e->allpass[j];
 			float *data = b->data, *w = rev[j >> 1];
 			unsigned int pos = b->pos, len = b->length;
-			for (i = 0; i != n; i++)
+			for (i = 0; i != n;)
 			{
-				float x = w[i], y = data[pos];
-				data[pos] = x + y * 0.5f;
-				w[i] = y - x;
-				if (++pos == len) pos = 0;
+				unsigned int run = (len - pos < (unsigned int)(n - i) ? len - pos : (unsigned int)(n - i)), k;
+				for (k = 0; k != run; k++, i++, pos++)
+				{
+					float x = w[i], y = data[pos];
+					data[pos] = x + y * 0.5f;
+					w[i] = y - x;
+				}
+				if (pos == len) pos = 0;
 			}
 			b->pos = pos;
 		}
 	}
 	if (doChorus)
 	{
-		float startPhase = e->chorusPhase, p = startPhase;
+		float startPhase = e->chorusPhase, p = startPhase, depth = e->chorusDepth * 0.008f;
 		for (j = 0; j != 2; j++) // modulated delay line per side, the right side's LFO is a quarter cycle apart
 		{
 			struct tsf_fx_line* b = &e->chorus[j];
@@ -1984,7 +2001,7 @@ static void tsf_fx_process(struct tsf_fx* e, const float* ci, const float* ri, f
 				unsigned int ix;
 				if (phase >= 1.0f) phase -= 1.0f;
 				tri = (phase < 0.5f ? phase * 4.0f - 1.0f : 3.0f - phase * 4.0f);
-				rp = (float)pos - rate * (0.020f + e->chorusDepth * 0.008f * tri);
+				rp = (float)pos - rate * (0.020f + depth * tri);
 				while (rp < 0.0f) rp += (float)len;
 				ix = (unsigned int)rp; frac = rp - (float)ix;
 				if (ix >= len) ix -= len;
@@ -1999,11 +2016,14 @@ static void tsf_fx_process(struct tsf_fx* e, const float* ci, const float* ri, f
 		}
 		e->chorusPhase = p;
 	}
-	for (i = 0; i != n; i++)
 	{
-		float mid = (rev[0][i] + rev[1][i]) * 0.5f, side = (rev[0][i] - rev[1][i]) * 0.5f * e->width;
-		ol[i] += (mid + side) * e->reverbWet + cho[0][i] * e->chorusWet;
-		or_[i] += (mid - side) * e->reverbWet + cho[1][i] * e->chorusWet;
+		float width = e->width, reverbWet = e->reverbWet, chorusWet = e->chorusWet;
+		for (i = 0; i != n; i++)
+		{
+			float mid = (rev[0][i] + rev[1][i]) * 0.5f, side = (rev[0][i] - rev[1][i]) * 0.5f * width;
+			ol[i] += (mid + side) * reverbWet + cho[0][i] * chorusWet;
+			or_[i] += (mid - side) * reverbWet + cho[1][i] * chorusWet;
+		}
 	}
 }
 

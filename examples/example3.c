@@ -37,11 +37,29 @@ static void AudioCallback(ma_device* pDevice, void* pOutput, const void* pInput,
 				case TML_NOTE_OFF: //stop a note
 					tsf_channel_note_off(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->key);
 					break;
+				case TML_KEY_PRESSURE: //key pressure modification
+					tsf_channel_set_keypressure(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->key, g_MidiMessage->key_pressure);
+					break;
+				case TML_CHANNEL_PRESSURE: //channel pressure modification
+					tsf_channel_set_pressure(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->channel_pressure);
+					break;
 				case TML_PITCH_BEND: //pitch wheel modification
 					tsf_channel_set_pitchwheel(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->pitch_bend);
 					break;
 				case TML_CONTROL_CHANGE: //MIDI controller messages
 					tsf_channel_midi_control(g_TinySoundFont, g_MidiMessage->channel, g_MidiMessage->control, g_MidiMessage->control_value);
+					break;
+				case TML_GM_RESET:
+					tsf_reset(g_TinySoundFont);
+					tsf_channel_set_bank_preset(g_TinySoundFont, 9, 128, 0);
+					break;
+				case TML_GM2_RESET:
+				case TML_GS_RESET:
+				case TML_XG_RESET:
+					tsf_reset(g_TinySoundFont);
+					tsf_channel_set_bank_preset(g_TinySoundFont, 9, 128, 0);
+					for (int ch = 0; ch < 16; ch++)
+						tsf_channel_midi_control(g_TinySoundFont, ch, 91, 40); // CC91=40
 					break;
 			}
 		}
@@ -86,21 +104,26 @@ int main(int argc, char *argv[])
 		return 1;
 	}
 
-	//Set up the global MidiMessage pointer to the first MIDI message
+	// Set up the global MidiMessage pointer to the first MIDI message
 	g_MidiMessage = TinyMidiLoader;
 
 	// Load the SoundFont from a file
-	g_TinySoundFont = tsf_load_filename(
-		(argc >= 3 ? argv[2] : "florestan-subset.sf2")
-	);
+	g_TinySoundFont = tsf_load_filename((argc >= 3 ? argv[2] : "florestan-subset.sf2"));
 	if (!g_TinySoundFont)
 	{
 		fprintf(stderr, "Could not load SoundFont\n");
 		return 1;
 	}
 
-	//Initialize preset on special 10th MIDI channel to use percussion sound bank (128) if available
+	// Initialize preset on special 10th MIDI channel to use percussion sound bank (128) if available
 	tsf_channel_set_bank_preset(g_TinySoundFont, 9, 128, 0);
+
+	// Pre-allocate 256 voices
+	// tsf_set_max_voices(g_TinySoundFont, 256);
+
+	// Disable effects
+	// tsf_set_reverb(0, 0.0f, 0.0f, 0.0f, 0.0f);
+	// tsf_set_chorus(0, 0.0f, 0.0f, 0.0f, 0.0f);
 
 	// Set the SoundFont rendering output mode
 	tsf_set_output(g_TinySoundFont, TSF_STEREO_INTERLEAVED, (int)deviceConfig.sampleRate, -10.0f);

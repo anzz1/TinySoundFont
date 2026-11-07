@@ -54,7 +54,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
   - Velocity and key number are taken from the note.
 - **Normalization:** controllers are divided by their range plus one: a CC value by 128, the pitch wheel by 16384.
   - **Pitch wheel sensitivity exception:** this source is divided by 127, so the default pitch wheel modulator (12700 cents) bends by exactly the RPN 0 range (±2 semitones by default). Read literally, the spec's 127/128 mapping would give 198.4 cents.
-- **14-bit controllers:** CC1–CC31 (except data entry, CC6) combine with their LSB (CC33–CC63) once the LSB has been sent.
+- **14-bit controllers:** CC1–CC31 (except data entry, CC6) combine with their LSB (CC33–CC63) once the LSB has been sent. An MSB sets its LSB back to 0 (MIDI 1.0), so a later MSB alone is exact.
 - **Curves:** concave is `−40/96·log10(1−x)` and convex is `1 + 40/96·log10(x)`, as in FluidSynth 2.3 and later. For bipolar sources the curve is mirrored around the center.
 - **Merging (9.5):**
   - An identical modulator replaces the default one or the global zone's; identical means the same sources, destination and transform.
@@ -83,7 +83,7 @@ All of them are implemented except for two deliberate deviations:
 - **Selecting a generator:** NRPN MSB (CC99) = 120, then NRPN LSB (CC98).
   - LSB values 100, 101 and 102 add 100, 1000 and 10000 to the generator number.
   - An LSB of 0–99 completes the number, so `100, 50` selects generator 150.
-- **Applying a value:** data entry is applied when the MSB (CC6) arrives, combined with the most recent LSB (CC38). The value minus 8192 is multiplied by a per-generator scale and added to the generator like a modulator output.
+- **Applying a value:** data entry is applied when the MSB (CC6) arrives, combined with the most recent LSB (CC38). (For the RPNs the MSB sets the LSB to 0 first, as MIDI 1.0 requires, and an LSB sent after it completes the value.) The value minus 8192 is multiplied by a per-generator scale and added to the generator like a modulator output.
 - **Scale:** the spec halves the useful range until it fits 8192 steps. The scale values are 1, 2 or 4 units per step.
 - **Ignored targets:** generators that are not real-time parameters are ignored. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `exclusiveClass` and the root key.
 - **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. Other NRPN MSB values are ignored, including the AWE32 NRPN set (MSB 127), which 9.6 says is incompatible.
@@ -97,6 +97,7 @@ All of them are implemented except for two deliberate deviations:
 - **Mono mode and legato:**
   - Mono mode (CC126/127) and the legato footswitch (CC68) make a key pressed while another is held continue the note at the new pitch, without restarting the envelope.
   - Releasing that key returns to the previously held key; up to 8 held keys are remembered.
+  - A note kept by the sustain pedal or hold 2 after its key was let go counts as held too, so the next key continues it (one note sounds, as on a mono synth). A note kept by sostenuto stays as it is.
 - **Portamento:**
   - CC65 switches it on. Notes glide from the previous note, or from the key given by CC84 for the next note only.
   - The glide time is CC5 (MSB) / CC37 (LSB) as a 14-bit value in milliseconds.

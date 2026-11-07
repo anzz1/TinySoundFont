@@ -85,7 +85,7 @@ All of them are implemented except for two deliberate deviations:
   - An LSB of 0–99 completes the number, so `100, 50` selects generator 150.
 - **Applying a value:** data entry is applied when the MSB (CC6) arrives, combined with the most recent LSB (CC38). (For the RPNs the MSB sets the LSB to 0 first, as MIDI 1.0 requires, and an LSB sent after it completes the value.) The value minus 8192 is multiplied by a per-generator scale and added to the generator like a modulator output.
 - **Scale:** the spec halves the useful range until it fits 8192 steps. The scale values are 1, 2 or 4 units per step.
-- **Ignored targets:** generators that are not real-time parameters are ignored. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `exclusiveClass` and the root key.
+- **Ignored targets:** generators that are not real-time parameters are ignored. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `scaleTuning`, `exclusiveClass` and the root key.
 - **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. Other NRPN MSB values are ignored, including the AWE32 NRPN set (MSB 127), which 9.6 says is incompatible.
 - **Reset:** Reset All Controllers (CC121) clears the NRPN offsets.
 
@@ -152,7 +152,7 @@ All of them are implemented except for two deliberate deviations:
 
 ## Rendering and performance
 
-- **Sample data:** kept as 16-bit integers like as in the font, half the memory of floats.
+- **Sample data:** kept as 16-bit integers as in the font, half the memory of floats.
 - **Interpolation:** linear, with the playback position as a 32.32 fixed-point number. It runs in integers with a 15-bit fraction and converts only the result to float (the 1/2^30 scale is part of the gains), which is faster than converting both samples. Compared with interpolating in floats, the difference is about −100 dB, below the 16-bit rounding noise of the samples themselves.
 - **Block processing:** envelopes, LFOs, filter coefficients and pitch are updated every 64 samples (`TSF_RENDER_EFFECTSAMPLEBLOCK`). The gain ramps linearly within each block, which avoids zipper noise and clicks.
 - **Silent blocks:** during an envelope delay or at zero volume, a voice that bypasses the filter skips interpolation and only advances its position.
@@ -172,14 +172,14 @@ With `stb_vorbis.c` included before `tsf.h`, two compressed formats load as well
 - **Damaged files:** a sample whose stream can't be opened, or whose byte range lies outside the data, is left out (an SFO whose single stream can't be opened fails to load). A truncated stream plays what decodes; regions whose samples lie past that are dropped.
 - **RIFF padding:** a chunk of odd size, common for compressed data, is followed by a pad byte as RIFF specifies; files written without it (as SFOTool does) load too.
 - **Both stb_vorbis APIs** work: the default pull API and the pushdata-only build (`STB_VORBIS_NO_PULLDATA_API`).
-- **Sample data:** compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
+- **Sample data:** a plain .sf2 loads as it does without Vorbis support, its 16-bit samples used as they are. Compressed fonts are decoded to floats and then converted to 16-bit once while loading, rounded. Lossy compression occasionally decodes a sample slightly beyond full scale; such samples are clipped to full scale, which brings them closer to the original 16-bit samples.
 
 ## API arguments
 
 - **Out of range values:** channel numbers outside 0 to `TSF_MAX_CHANNELS` - 1 and preset indices that don't exist are rejected (the function returns 0). Controller values are clamped to 0–127, the pitch wheel to 0–16383, pressure to 0–127.
 - **Velocity:** 0, a negative value or NaN is a note off; any positive velocity plays, at MIDI velocity 1 or more.
 - **Float arguments:** an infinite or NaN pan, volume, pitch range, tuning or gain is ignored. The global gain is kept between −200 and +100 dB, so changing it back restores the sounding notes exactly. Effect settings are clamped (NaN as 0).
-- **Pitch:** the playback speed is capped at 2^24 times the sample rate, so no tuning can overflow the 32.32 fixed-point position.
+- **Pitch:** the playback speed is capped at 2^23 times the sample rate, so no tuning can overflow the 32.32 fixed-point position.
 
 ## Compile options
 

@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.004 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.005 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -1281,7 +1281,7 @@ static int tsf_load_samples(void** pRawBuffer, float** pSampleBuffer /* floats w
 	// With OGG Vorbis support we cannot pre-allocate the memory for tsf_decode_sf3_samples
 	tsf_u32 resNum, resMax; float* oldres; int got;
 	*pSmplCount = chunkSmpl->size;
-	*pRawBuffer = (void*)TSF_MALLOC(*pSmplCount);
+	*pRawBuffer = (void*)TSF_MALLOC(*pSmplCount + sizeof(short)); // room for the extra zero sample if these are plain 16-bit samples
 	if (!*pRawBuffer || (got = stream->read(stream->data, *pRawBuffer, chunkSmpl->size)) <= 0) return 0;
 	if ((unsigned int)got < chunkSmpl->size) TSF_MEMSET((char*)*pRawBuffer + got, 0, chunkSmpl->size - got); // truncated file: silence, not uninitialized memory
 	if (chunkSmpl->id[3] != 'o') return 1;
@@ -2139,13 +2139,24 @@ TSFDEF tsf* tsf_load(struct tsf_stream* stream)
 	else
 	{
 		#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
-		if (!sampleBuffer && !tsf_decode_sf3_samples(rawBuffer, &sampleBuffer, &smplCount, &hydra)) goto out_of_memory;
+		int j = 0; // with no compressed sample (a plain .sf2) the samples are used as they are, like without Vorbis support
+		if (!sampleBuffer) while (j != hydra.shdrNum && !(hydra.shdrs[j].sampleType & 0x30)) j++;
+		if (!sampleBuffer && j == hydra.shdrNum)
+		{
+			short *s = (short*)rawBuffer, *sEnd = s + (smplCount /= sizeof(short));
+			for (; s != sEnd; s++) *s = (short)TSF_SWAP16LE(*s);
+			*s = 0; // one extra zero sample for the interpolation at the very end
+			sampleBuffer = (float*)rawBuffer, rawBuffer = TSF_NULL;
+		}
+		else if (!sampleBuffer && !tsf_decode_sf3_samples(rawBuffer, &sampleBuffer, &smplCount, &hydra)) goto out_of_memory;
+		else j = -1; // decoded to floats
 		#endif
 		res = (tsf*)TSF_MALLOC(sizeof(tsf));
 		if (res) TSF_MEMSET(res, 0, sizeof(tsf));
 		if (!res || !tsf_load_presets(res, &hydra, smplCount)) goto out_of_memory;
 		res->outSampleRate = 44100.0f;
 		#ifdef STB_VORBIS_INCLUDE_STB_VORBIS_H
+		if (j < 0)
 		{ // the decoded samples are floats: convert them to 16-bit in place (each short is written where its float was already read)
 			short* out = (short*)sampleBuffer; unsigned int i; void* shrunk;
 			for (i = 0; i <= smplCount; i++) { float v = sampleBuffer[i] * 32768.0f; out[i] = (short)(v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : (int)(v + (v < 0 ? -0.5f : 0.5f))); }

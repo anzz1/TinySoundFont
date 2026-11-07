@@ -11,6 +11,7 @@ Section numbers like *8.1.2* refer to the SoundFont 2.01 specification (SFSPEC21
 | General MIDI 1 | Complete (see [General MIDI](#general-midi) for what the caller does) |
 | SoundFont 2.01 | Complete: all generators, modulators, default modulators and the NRPN real-time control |
 | SoundFont 2.04 | Linked modulators and the absolute value transform. 24-bit samples (`sm24` chunk) are not supported; the 16-bit sample data is played, which 2.04 permits |
+| AWE32 NRPN | All 27 parameters (MSB 127), see [AWE32 NRPN](#awe32-nrpn) |
 | GM2, GS, XG | Not supported yet (GS-style bank select with CC0 only does work) |
 
 ## Generators
@@ -86,8 +87,50 @@ All of them are implemented except for two deliberate deviations:
 - **Applying a value:** data entry is applied when the MSB (CC6) arrives, combined with the most recent LSB (CC38). (For the RPNs the MSB sets the LSB to 0 first, as MIDI 1.0 requires, and an LSB sent after it completes the value.) The value minus 8192 is multiplied by a per-generator scale and added to the generator like a modulator output.
 - **Scale:** the spec halves the useful range until it fits 8192 steps. The scale values are 1, 2 or 4 units per step.
 - **Ignored targets:** generators that are not real-time parameters are ignored. These are the sample offsets, key/velocity ranges, `keynum`, `velocity`, `sampleModes`, `scaleTuning`, `exclusiveClass` and the root key.
-- **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. Other NRPN MSB values are ignored, including the AWE32 NRPN set (MSB 127), which 9.6 says is incompatible.
+- **Interaction with RPNs:** selecting an RPN afterwards takes over the data entry. The [AWE32 NRPN](#awe32-nrpn) set (MSB 127) is supported separately. Other NRPN MSB values are ignored.
 - **Reset:** Reset All Controllers (CC121) clears the NRPN offsets.
+
+## AWE32 NRPN
+
+The Sound Blaster AWE32 has its own NRPN set. MIDI files made for the AWE32 and its successors use it, mostly for the filter. 9.6 notes that it is not compatible with the SoundFont 2.01 set, meaning the two number, scale and apply their values differently. They do not overlap, though: each set has its own NRPN MSB, so TSF supports both, and a file can use either.
+
+Creative never published the full unit table; the conversions follow the AWE32 programmer's guide as implemented by the Linux emux driver (`emux_nrpn.c`), and the filter follows the Audigy, the only hardware that has been measured.
+
+- **Selecting a parameter:** NRPN MSB (CC99) = 127, then NRPN LSB (CC98) = 0–26. Higher LSB values select nothing.
+- **Applying a value:** data entry applies on either byte, MSB (CC6) or LSB (CC38), because AWE32 files often send only the LSB. The parameters with an 8-bit (or 7-bit) range use the low bits of the value; the others use the 14-bit value minus 8192.
+- **Set, not add:** the value replaces the generator value of every note on the channel, including notes already playing. The one exception is the initial pitch (16), which adds cents to the fine tune.
+
+| | SoundFont 2.01 NRPN | AWE32 NRPN |
+|---|---|---|
+| NRPN MSB (CC99) | 120 | 127 |
+| NRPN LSB (CC98) | generator number, with 100/101/102 steps for numbers above 99 | parameter 0–26, in its own order |
+| Effect | adds an offset to the generator | replaces the generator value |
+| Units | generator units × a scale of 1, 2 or 4 | AWE32 units (ms, 0.084 Hz, 9.375 cents, …) |
+| Applied on | the data entry MSB | either data entry byte |
+
+- **Using both:** the CC99 value decides which set the following CC98 and data entry belong to, and selecting one set (or an RPN) replaces the previous selection. Neither specification says how the two combine on the same generator. TSF applies the AWE32 value as the base, then the modulators and the SoundFont 2.01 NRPN offset add to it (9.6 defines that offset like a modulator output). For example, an AWE32 initial pitch of +100 cents and an NRPN fine tune of +50 give +150 cents. In practice a MIDI file uses only one of the two sets.
+- **Conversions:**
+
+| Parameters | Generator | Conversion |
+|---|---|---|
+| 0, 2, 4, 10: LFO 1/2, mod env, vol env delay | delays | 0–5900 ms to timecents |
+| 5, 7, 9, 11, 13, 15: attacks, decays, releases | attacks, decays, releases | 0–5940 ms to timecents |
+| 6, 12: mod env, vol env hold | holds | 0–8191 ms to timecents, 0 is the minimum |
+| 1, 3: LFO 1/2 frequency | `freqModLFO`, `freqVibLFO` | 7 bits × 0.084 Hz, 0 is the minimum |
+| 8: mod env sustain | `sustainModEnv` | (127 − value) / 127 × 100% |
+| 14: vol env sustain | `sustainVolEnv` | (127 − value) × 0.75 dB |
+| 16: initial pitch | added to `fineTune` | cents |
+| 17, 18, 19: LFO 1 / LFO 2 / mod env to pitch | `modLfoToPitch`, `vibLfoToPitch`, `modEnvToPitch` | signed 8 bits × 9.375 cents |
+| 20: LFO 1 to volume | `modLfoToVolume` | 8 bits × 0.1875 dB |
+| 21: initial filter cutoff | `initialFilterFc` | 100 Hz + value / 128 × 7646 cents (Audigy) |
+| 22: initial filter Q | `initialFilterQ` | value / 128 × 20 dB (Audigy) |
+| 23: LFO 1 to filter cutoff | `modLfoToFilterFc` | signed 7 bits × 56.25 cents |
+| 24: mod env to filter cutoff | `modEnvToFilterFc` | signed 8 bits × 56.25 cents |
+| 25, 26: chorus, reverb send | `chorusEffectsSend`, `reverbEffectsSend` | 8 bits / 255 × 100% |
+
+- **Verified:** the filter cutoff and Q against the SoundFont-Spec-Test "NRPN test - filter" recordings of an Audigy 2. The resonant peak follows the recorded one from 150 Hz to 8 kHz; the AWE32's own 8-bit filter curve differs and is not emulated.
+- **Not verified on hardware:** the other conversions follow the emux driver, including its reading of the time units as milliseconds.
+- **Reset:** Reset All Controllers (CC121) clears the AWE32 settings.
 
 ## MIDI channel behavior
 
@@ -112,7 +155,7 @@ All of them are implemented except for two deliberate deviations:
 - **All Sound Off:** CC120 ends the notes with a 10 ms fade instead of a hard cut, to avoid clicks.
 - **Reset All Controllers (CC121)** follows RP-015:
   - Kept: volume, pan, bank, program, effect depths, sound controllers and the RPN values (pitch range and tuning).
-  - Reset: everything else, including poly pressure and the NRPN offsets.
+  - Reset: everything else, including poly pressure, the NRPN offsets and the AWE32 settings.
 - **Bank select:** works with CC0 alone (GS style) as well as with combined MSB/LSB banks. A CC32 sent alone later keeps the MSB.
 
 ## General MIDI
@@ -203,4 +246,4 @@ The implementation was checked as follows:
 - **Big-endian:** the GM test files rendered on an emulated big-endian machine (s390x under QEMU) with .sf2, .sfo and .sf3 fonts match the little-endian output within float rounding, and the unit tests pass there.
 - **FluidSynth comparison:** the GM test files were rendered per channel with TimGM6mb in both synths (linear interpolation, no effects). The median levels of every channel agree within about 1 dB, and the stereo balance matches.
 - **Memory:** every allocation counted through `TSF_MALLOC`/`TSF_REALLOC`/`TSF_FREE` and checked that `tsf_close` frees all of it. Playing the GM test files used 3.4 MB of heap with gm.sf2 and 6.0 MB with TimGM6mb, and the whole process 6–9 MB, against 24–28 MB for FluidSynth.
-- **Speed:** on the test machine, tsf rendered the GM files with gm.sf2 3–6× faster than FluidSynth 2.3 with linear interpolation (one core, 44.1 kHz), and with TimGM6mb, which filters almost every voice, 1.4–2× faster.
+- **Speed:** on the test machine, TSF rendered the GM files with gm.sf2 3–6× faster than FluidSynth 2.3 with linear interpolation (one core, 44.1 kHz), and with TimGM6mb, which filters almost every voice, 1.4–2× faster.

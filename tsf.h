@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.005 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.006 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -616,6 +616,7 @@ struct tsf_channel
 	signed char tuneCoarse; float tuneFine; // RPN 2 and RPN 1 (semitones), their sum is the channel tuning
 	unsigned char nrpnMSB; unsigned short nrpnSel, nrpnAcc; // SF2.01 NRPN (9.6): selected generator (0xFFFF none) and the 100/1000/10000 steps
 	short nrpn[TSF_NUMGENS]; // SF2.01 NRPN data entry per generator (offset from 8192), added like a modulator output
+	unsigned int aweSet; short awe[27]; // AWE32 NRPN (MSB 127): the parameters set (bits) and their values in generator units
 };
 
 struct tsf_channels
@@ -1635,6 +1636,43 @@ static const unsigned char tsf_nrpn_scale[TSF_NUMGENS] =
 	1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0     // 40-58
 };
 
+// AWE32 NRPN (MSB 127, LSB 0-26): the generator each sets (initial pitch adds to fine tune) and the value conversion:
+// times and pitch use the 14-bit value - 8192, the others its low 8 or 7 bits; filter cutoff and Q follow the Audigy
+
+static const unsigned char tsf_awe_gen[27] =
+{
+	21, 22, 23, 24,          // 0-3:   mod LFO delay and frequency, vibrato LFO delay and frequency
+	25, 26, 27, 28, 29, 30,  // 4-9:   mod envelope delay, attack, hold, decay, sustain, release
+	33, 34, 35, 36, 37, 38,  // 10-15: volume envelope delay, attack, hold, decay, sustain, release
+	52, 5, 6, 7, 13,         // 16-20: initial pitch (added to the fine tune), mod LFO, vibrato LFO and mod envelope to pitch, mod LFO to volume
+	8, 9, 10, 11, 15, 16     // 21-26: filter cutoff and resonance, mod LFO and mod envelope to cutoff, chorus, reverb
+};
+static short tsf_awe_round(double x) { return (short)(x < 0 ? x - 0.5 : x + 0.5); }
+static short tsf_awe_nrpn_value(int param, int data)
+{
+	int x = data - 8192, b = data & 0xFF, l = data & 0x7F, sb = (b ^ 0x80) - 0x80, max = 5940;
+	switch (param)
+	{
+		case 0: case 2: case 4: case 10: max = 5900; /* fall through */ // delays: 0-5900 ms
+		case 5: case 7: case 9: case 11: case 13: case 15:              // attacks, decays and releases: 0-5940 ms
+		case 6: case 12:                                                // holds: 0-8191 ms
+			if (param == 6 || param == 12) max = 8191;
+			if (x > max) x = max;
+			return (x <= 0 ? -12000 : tsf_awe_round(1731.234 * TSF_LOG(x * 0.001))); // timecents
+		case 1: case 3: return (l ? tsf_awe_round(1731.234 * TSF_LOG(l * (0.084 / 8.176))) : -16000); // 0-127: 0.084 Hz steps
+		case 8: return (short)((127 - (b > 127 ? 127 : b)) * 1000 / 127); // 0-127: the level, 127 the peak (sustain is a 0.1% decrease)
+		case 14: return tsf_awe_round((127 - (b > 127 ? 127 : b)) * 7.5f); // 0-127: 0.75 dB steps below full level (sustain is in cB)
+		case 16: return (short)x; // -8192-8191: cents
+		case 17: case 18: case 19: return tsf_awe_round(sb * 9.375f); // -127-127: 9.375 cent steps
+		case 20: return tsf_awe_round(l * 1.875f); // 0-127: 0.1875 dB steps
+		case 21: return tsf_awe_round(4335.7f + l * (7646.0f / 128.0f)); // 0-127: 100 Hz up to 8000 Hz, logarithmic (absolute cents)
+		case 22: return tsf_awe_round(l * (200.0f / 128.0f)); // 0-127: up to 19.84 dB (cB)
+		case 23: return tsf_awe_round(((l ^ 0x40) - 0x40) * 56.25f); // -64-63: 56.25 cent steps
+		case 24: return tsf_awe_round(sb * 56.25f); // -127-127: 56.25 cent steps
+		default: return (short)(b * 1000 / 255); // 25, 26: 0-255 chorus and reverb send (0.1%)
+	}
+}
+
 // The output of modulator p in list m (a linked source is the sum of the outputs of the modulators linked to p)
 static float tsf_mod_out(const struct tsf_mod* m, const struct tsf_mod* p, const struct tsf_voice* v, const struct tsf_channel* c)
 {
@@ -1667,6 +1705,15 @@ static void tsf_voice_modulate(tsf* f, struct tsf_voice* v, TSF_BOOL init)
 	for (p = m; p->dest != TSF_MODEND; p++)
 		if (!(p->dest & 0x8000)) g[p->dest] += tsf_mod_out(m, p, v, c);
 	if (c) for (i = 0; i != TSF_NUMGENS; i++) g[i] += c->nrpn[i] * tsf_nrpn_scale[i]; // SF2.01 NRPN offsets act like modulators
+	if (c && c->aweSet) // AWE32 NRPN: replace the generator value (the modulators still add to it), the initial pitch adds cents
+		for (i = 0; i != 27; i++)
+		{
+			union tsf_hydra_genamount a;
+			if (!(c->aweSet & (1u << i))) continue;
+			if (i == 16) { g[52] += c->awe[16]; continue; }
+			a.shortAmount = c->awe[i];
+			tsf_region_operator(&n, tsf_awe_gen[i], &a, TSF_NULL, 0.0f);
+		}
 	if (init)
 	{
 		v->modulatesLFO = v->modulatesEnv = 0;
@@ -2670,6 +2717,7 @@ static struct tsf_channel* tsf_channel_init(tsf* f, int channel)
 		c->modDepth = 1.0f;
 		c->nrpnMSB = 0; c->nrpnSel = 0xFFFF; c->nrpnAcc = 0;
 		TSF_MEMSET(c->nrpn, 0, sizeof(c->nrpn));
+		c->aweSet = 0;
 		c->monoCount = 0;
 		c->pressure = 0;
 		TSF_MEMSET(c->cc, 0, sizeof(c->cc));
@@ -3041,6 +3089,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 		case  99 /*NRPN_MSB*/        : c->midiRPN = 0xFFFF; c->nrpnMSB = (unsigned char)control_value; c->nrpnSel = 0xFFFF; c->nrpnAcc = 0; return 1;
 		case  98 /*NRPN_LSB*/        : // SF2.01 NRPN (9.6) with MSB 120: LSB 100/101/102 add 100/1000/10000, LSB 0-99 completes the generator number
 			c->midiRPN = 0xFFFF;
+			if (c->nrpnMSB == 127) { c->nrpnSel = (unsigned short)(control_value <= 26 ? 0x8000 | control_value : 0xFFFF); return 1; } // AWE32 NRPN
 			if (c->nrpnMSB != 120) return 1;
 			if (control_value < 100) { c->nrpnSel = (unsigned short)(c->nrpnAcc + control_value); c->nrpnAcc = 0; }
 			else if (control_value <= 102) { c->nrpnAcc = (unsigned short)(c->nrpnAcc + (control_value == 100 ? 100 : (control_value == 101 ? 1000 : 10000))); c->nrpnSel = 0xFFFF; }
@@ -3089,6 +3138,7 @@ TSFDEF int tsf_channel_midi_control(tsf* f, int channel, int controller, int con
 			c->midiData = 0;
 			c->nrpnMSB = 0; c->nrpnSel = 0xFFFF; c->nrpnAcc = 0;
 			TSF_MEMSET(c->nrpn, 0, sizeof(c->nrpn));
+			c->aweSet = 0;
 			c->portaKey = 255;
 			tsf_channel_modulate(f, channel);
 			return 1;
@@ -3103,6 +3153,13 @@ TCMC_SET_DATA:
 	else if (c->midiRPN == 0xFFFF && c->nrpnSel < TSF_NUMGENS && tsf_nrpn_scale[c->nrpnSel] && controller != 38) //SF2.01 NRPN: applied when the data MSB arrives
 	{
 		c->nrpn[c->nrpnSel] = (short)(c->midiData - 8192);
+		tsf_channel_modulate(f, channel);
+	}
+	else if (c->midiRPN == 0xFFFF && c->nrpnSel >= 0x8000 && c->nrpnSel != 0xFFFF) //AWE32 NRPN: applied with either data entry byte
+	{
+		int param = c->nrpnSel & 0x7FFF;
+		c->awe[param] = tsf_awe_nrpn_value(param, c->midiData);
+		c->aweSet |= 1u << param;
 		tsf_channel_modulate(f, channel);
 	}
 	return 1;

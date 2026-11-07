@@ -1,4 +1,4 @@
-/* TinyMidiLoader2 - v2.00 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
+/* TinyMidiLoader2 - v2.01 - Minimalistic midi parsing library - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TML_IMPLEMENTATION
@@ -235,7 +235,7 @@ TMLDEF struct tml_message* tml_load_memory(const void* buffer, int size)
 	struct tml_stream stream = { TML_NULL, (int(*)(void*,void*,unsigned int))&tml_stream_memory_read };
 	struct tml_stream_memory f = { 0, 0, 0 };
 	f.buffer = (const char*)buffer;
-	f.total = size;
+	f.total = (size > 0 ? (unsigned int)size : 0);
 	stream.data = &f;
 	return tml_load(&stream);
 }
@@ -256,6 +256,7 @@ struct tml_parser
 {
 	unsigned char *buf, *buf_end;
 	int last_status, message_array_size, message_count;
+	unsigned int skipped_time; // delta time of the messages that were not stored (unsupported events), added to the next one
 };
 
 enum TMLSystemType
@@ -290,18 +291,18 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 	int deltatime = tml_readvariablelength(p), status = tml_readbyte(p);
 	tml_message* evt;
 
+	if (deltatime < 0 || status < 0) { TML_WARN("Unexpected end of file"); return -1; }
 	if (deltatime & 0xFFF00000) deltatime = 0; //throw away delays that are insanely high for malformatted midis
-	if (status < 0) { TML_WARN("Unexpected end of file"); return -1; }
 	if ((status & 0x80) == 0)
 	{
-		// Invalid, use same status as before
+		// Running status: the data byte belongs to a message with the same status as the previous channel message
 		if ((p->last_status & 0x80) == 0) { TML_WARN("Undefined status and invalid running status"); return -1; }
 		p->buf--;
 		status = p->last_status;
 	}
-	else p->last_status = status;
+	else if (status < 0xF0) p->last_status = status; // only channel messages set the running status (a sysex or meta event in between keeps it)
 
-	if (p->message_array_size == p->message_count)
+	if (p->message_count >= p->message_array_size)
 	{
 		//start allocated memory size of message array at 64, double each time until 8192, then add 1024 entries until done
 		int new_size = p->message_array_size + (!p->message_array_size ? 64 : (p->message_array_size > 4096 ? 1024 : p->message_array_size));
@@ -334,15 +335,16 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 	{
 		int meta_type = tml_readbyte(p), buflen = tml_readvariablelength(p);
 		unsigned char* metadata = p->buf;
-		if (meta_type < 0) { TML_WARN("Unexpected end of file"); return -1; }
-		if (buflen > 0 && (p->buf += buflen) > p->buf_end) { TML_WARN("Unexpected end of file"); p->buf = p->buf_end; return -1; }
+		if (meta_type < 0 || buflen < 0 || buflen > p->buf_end - p->buf) { TML_WARN("Unexpected end of file"); p->buf = p->buf_end; return -1; }
+		p->buf += buflen;
 
 		switch (meta_type)
 		{
 			case TML_EOT:
 				if (buflen != 0) { TML_WARN("Invalid length for EndOfTrack event"); return -1; }
-				if (!deltatime) return TML_EOT; //no need to store this message
+				if (!deltatime && !p->skipped_time) return TML_EOT; //no need to store this message
 				evt->type = TML_EOT;
+				evt->channel = evt->key = evt->velocity = 0;
 				break;
 
 			case TML_SET_TEMPO:
@@ -389,7 +391,9 @@ static int tml_parsemessage(tml_message** f, struct tml_parser* p)
 		}
 	}
 
-	evt->time = deltatime;
+	if (!evt->type) { p->skipped_time += deltatime; return 0; } //not stored, its time is kept by the next message of the track
+	evt->time = deltatime + p->skipped_time;
+	p->skipped_time = 0;
 	p->message_count++;
 	return evt->type;
 }
@@ -398,14 +402,18 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 {
 	int num_tracks, division, trackbufsize = 0;
 	unsigned char midi_header[14], *trackbuf = TML_NULL;
+	unsigned int header_length;
 	struct tml_message* messages = TML_NULL;
 	struct tml_track *tracks, *t, *tracksEnd;
-	struct tml_parser p = { TML_NULL, TML_NULL, 0, 0, 0 };
+	struct tml_parser p = { TML_NULL, TML_NULL, 0, 0, 1, 0 }; // message 0 is reserved for the first message in time (the list head that tml_free frees)
 
 	// Parse MIDI header
 	if (stream->read(stream->data, midi_header, 14) != 14) { TML_ERROR("Unexpected end of file"); return messages; }
+	header_length = ((unsigned)midi_header[4] << 24) | ((unsigned)midi_header[5] << 16) | ((unsigned)midi_header[6] << 8) | midi_header[7];
 	if (midi_header[0] != 'M' || midi_header[1] != 'T' || midi_header[2] != 'h' || midi_header[3] != 'd' ||
-	    midi_header[7] != 6   || midi_header[9] >  2) { TML_ERROR("Doesn't look like a MIDI file: invalid MThd header"); return messages; }
+		header_length < 6 || header_length > 0x10000 || midi_header[8] || midi_header[9] > 2) { TML_ERROR("Doesn't look like a MIDI file: invalid MThd header"); return messages; }
+	for (header_length -= 6; header_length; header_length--) // a longer header is allowed per SMF spec, skip it
+		if (stream->read(stream->data, midi_header, 1) != 1) { TML_ERROR("Unexpected end of file"); return messages; }
 	if (midi_header[12] & 0x80) { TML_ERROR("File uses unsupported SMPTE timing"); return messages; }
 	num_tracks = (int)(midi_header[10] << 8) | midi_header[11];
 	division = (int)(midi_header[12] << 8) | midi_header[13]; //division is ticks per beat (quarter-note)
@@ -418,13 +426,13 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 	for (t = tracks; t != tracksEnd; t++) t->Idx = t->End = t->Ticks = 0;
 
 	// Read all messages for all tracks
-	for (t = tracks; t != tracksEnd; t++)
+	for (t = tracks; t != tracksEnd;)
 	{
 		unsigned char track_header[8];
-		int track_length;
+		int track_length, is_track;
 		if (stream->read(stream->data, track_header, 8) != 8) { TML_WARN("Unexpected end of file"); break; }
-		if (track_header[0] != 'M' || track_header[1] != 'T' || track_header[2] != 'r' || track_header[3] != 'k')
-			{ TML_WARN("Invalid MTrk header"); break; }
+		is_track = (track_header[0] == 'M' && track_header[1] == 'T' && track_header[2] == 'r' && track_header[3] == 'k');
+		if (!is_track && (track_header[0] < ' ' || track_header[0] > '~')) { TML_WARN("Invalid MTrk header"); break; }
 
 		// Get size of track data and read into buffer (allocate bigger buffer if needed)
 		track_length = (int)((unsigned)track_header[7] | ((unsigned)track_header[6] << 8) | ((unsigned)track_header[5] << 16) | ((unsigned)track_header[4] << 24));
@@ -436,8 +444,11 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 			if (!trackbuf) { TML_ERROR("Out of memory"); trackbufsize = 0; break; }
 		}
 		if (stream->read(stream->data, trackbuf, track_length) != track_length) { TML_WARN("Unexpected end of file"); break; }
+		if (!is_track) { TML_WARN("Skipping an unknown chunk"); continue; }
 
 		t->Idx = p.message_count;
+		p.last_status = 0; // running status does not carry over from the previous track
+		p.skipped_time = 0;
 		for (p.buf_end = (p.buf = trackbuf) + track_length; p.buf != p.buf_end;)
 		{
 			int type = tml_parsemessage(&messages, &p);
@@ -445,13 +456,14 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		}
 		if (p.buf != p.buf_end) { TML_WARN( "Track length did not match data length"); }
 		t->End = p.message_count;
+		t++;
 	}
 	TML_FREE(trackbuf);
 
 	// Change message time signature from delta ticks to actual msec values and link messages ordered by time
-	if (p.message_count)
+	if (p.message_count > 1)
 	{
-		tml_message *PrevMessage = TML_NULL, *Msg, *MsgEnd, Swap;
+		tml_message *PrevMessage = TML_NULL, *Msg, *MsgEnd;
 		unsigned int ticks = 0, tempo_ticks = 0; //tick counter and value at last tempo change
 		int step_smallest, msec, tempo_msec = 0; //msec value at last tempo change
 		double ticks2time = 500000 / (1000.0 * division); //milliseconds per tick
@@ -474,12 +486,9 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 						tempo_msec = msec;
 						tempo_ticks = ticks;
 					}
-					if (Msg->type)
-					{
-						Msg->time = msec;
-						if (PrevMessage) { PrevMessage->next = Msg; PrevMessage = Msg; }
-						else { Swap = *Msg; *Msg = *messages; *messages = Swap; PrevMessage = messages; }
-					}
+					Msg->time = msec;
+					if (PrevMessage) { PrevMessage->next = Msg; PrevMessage = Msg; }
+					else { *messages = *Msg; PrevMessage = messages; } // the first message goes to the reserved slot 0 (its copy in the track is not linked)
 				}
 				if (Msg != MsgEnd && t->Ticks + Msg->time > ticks)
 				{
@@ -491,6 +500,7 @@ TMLDEF tml_message* tml_load(struct tml_stream* stream)
 		if (PrevMessage) PrevMessage->next = TML_NULL;
 		else p.message_count = 0;
 	}
+	else p.message_count = 0;
 	TML_FREE(tracks);
 
 	if (p.message_count == 0)

@@ -106,7 +106,7 @@ All of them are implemented except for two deliberate deviations:
   - RPN 2: coarse tuning (semitones).
   - RPN 5: modulation depth range. The default is 50 cents, and it scales the modulation wheel's pitch modulators.
   - The RPN null value (127/127) is respected.
-- **Data increment/decrement (CC96/97):** steps the selected parameter by one LSB step, or by one semitone for coarse tuning (RP-018).
+- **Data increment/decrement (CC96/97):** steps the selected parameter by one LSB step, or by one semitone for coarse tuning (RP-018). The pitch bend range (RPN 0) steps by one cent and carries between its cents (LSB, 0–99) and semitones (MSB).
 - **All Notes Off:** CC123 releases the notes, but the pedals keep holding them. The mode messages CC124–127 also act as All Notes Off (MIDI 1.0).
 - **All Sound Off:** CC120 ends the notes with a 10 ms fade instead of a hard cut, to avoid clicks.
 - **Reset All Controllers (CC121)** follows RP-015:

@@ -1,4 +1,4 @@
-/* TinySoundFont2 - v2.006 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
+/* TinySoundFont2 - v2.007 - SoundFont2 synthesizer - https://github.com/anzz1/TinySoundFont2
                                      no warranty implied; use at your own risk
    Do this:
       #define TSF_IMPLEMENTATION
@@ -12,7 +12,7 @@
    [OPTIONAL] #define TSF_NO_STDIO to remove stdio dependency
    [OPTIONAL] #define TSF_MALLOC, TSF_REALLOC, and TSF_FREE to avoid stdlib.h
    [OPTIONAL] #define TSF_MEMCPY, TSF_MEMSET to avoid string.h
-   [OPTIONAL] #define TSF_POW, TSF_POWF, TSF_EXPF, TSF_LOG, TSF_TAN, TSF_LOG10 to avoid math.h
+   [OPTIONAL] #define TSF_EXP, TSF_EXPF, TSF_LOGF, TSF_SQRT, TSF_TAN to avoid math.h
 
    SUPPORT
      - 100% of General MIDI (GM1): channel messages, controllers, RPN 0/1/2, drum channel
@@ -350,29 +350,26 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 #  endif
 #endif
 
-#if !defined(TSF_POW) || !defined(TSF_POWF) || !defined(TSF_EXPF) || !defined(TSF_LOG) || !defined(TSF_TAN) || !defined(TSF_LOG10)
+#if !defined(TSF_EXP) || !defined(TSF_EXPF) || !defined(TSF_LOGF) || !defined(TSF_SQRT) || !defined(TSF_TAN)
 #  include <math.h>
-#  if !defined(__cplusplus) && !defined(NAN) && !defined(powf) && !defined(expf)
-#    define powf (float)pow // deal with old math.h
-#    define expf (float)exp // files that come without
-#  endif // powf and expf
-#  ifndef TSF_POW
-#  define TSF_POW     pow
-#  endif
-#  ifndef TSF_POWF
-#  define TSF_POWF    powf
+#  if !defined(__cplusplus) && !defined(NAN) && !defined(expf) && !defined(logf)
+#    define expf (float)exp // deal with old math.h
+#    define logf (float)log // files that come without
+#  endif // expf and logf
+#  ifndef TSF_EXP
+#  define TSF_EXP     exp
 #  endif
 #  ifndef TSF_EXPF
 #  define TSF_EXPF    expf
 #  endif
-#  ifndef TSF_LOG
-#  define TSF_LOG     log
+#  ifndef TSF_LOGF
+#  define TSF_LOGF    logf
+#  endif
+#  ifndef TSF_SQRT
+#  define TSF_SQRT    sqrt
 #  endif
 #  ifndef TSF_TAN
 #  define TSF_TAN     tan
-#  endif
-#  ifndef TSF_LOG10
-#  define TSF_LOG10   log10
 #  endif
 #endif
 
@@ -384,6 +381,7 @@ TSFDEF float tsf_channel_get_tuning(tsf* f, int channel);
 #define TSF_FALSE 0
 #define TSF_BOOL unsigned char
 #define TSF_PI 3.14159265358979323846264338327950288
+#define TSF_LN2_1200 0.000577622650466621 // ln(2) / 1200: 2^(cents / 1200) = exp(cents * TSF_LN2_1200)
 #define TSF_NULL NULL
 
 #if EMU8K_COMPAT
@@ -626,11 +624,11 @@ struct tsf_channels
 	struct tsf_channel channels[1];
 };
 
-static double tsf_timecents2Secsd(double timecents) { return TSF_POW(2.0, timecents / 1200.0); }
-static float tsf_cents2Hertz(float cents) { return 8.176f * TSF_POWF(2.0f, cents / 1200.0f); }
-static float tsf_decibelsToGain(float db) { return (db > -100.f ? TSF_POWF(10.0f, db * 0.05f) : 0); }
+static double tsf_timecents2Secsd(double timecents) { return TSF_EXP(timecents * TSF_LN2_1200); }
+static float tsf_cents2Hertz(float cents) { return 8.176f * TSF_EXPF(cents * (float)TSF_LN2_1200); }
+static float tsf_decibelsToGain(float db) { return (db > -100.f ? TSF_EXPF(db * 0.11512925f) : 0); }
 #define TSF_FINITE(x) ((x) - (x) == 0.0f) // false for infinity and NaN, which the API's float arguments ignore
-static float tsf_gainToDecibels(float gain) { return (gain <= .00001f ? -100.f : (float)(20.0 * TSF_LOG10(gain))); }
+static float tsf_gainToDecibels(float gain) { return (gain <= .00001f ? -100.f : 8.6858896f * TSF_LOGF(gain)); }
 
 static TSF_BOOL tsf_riffchunk_read(struct tsf_riffchunk* parent, struct tsf_riffchunk* chunk, struct tsf_stream* stream)
 {
@@ -834,7 +832,7 @@ static void tsf_region_operator(struct tsf_region* region, tsf_u16 genOper, unio
 // Convert (modulated, clamped) envelope parameters from timecents to seconds and the sustain level to a 0..1 value.
 // The key number scaling of hold and decay is applied in timecents first (8.1.2 #31/#32/#39/#40), and the result is kept in the
 // generator's range (up to 1200 tc/key * 67 keys would otherwise give times of 2^70 seconds, which overflow the sample counts).
-static float tsf_timecents2Secs(float tc) { return (tc < -11950.0f ? 0.0f : TSF_POWF(2.0f, tc / 1200.0f)); }
+static float tsf_timecents2Secs(float tc) { return (tc < -11950.0f ? 0.0f : TSF_EXPF(tc * (float)TSF_LN2_1200)); }
 static float tsf_timecents_clamp(float tc, float max) { return (tc < -12000.0f ? -12000.0f : (tc > max ? max : tc)); }
 static void tsf_envelope_tosecs(struct tsf_envelope* p, int key, TSF_BOOL isAmpEnv)
 {
@@ -1318,7 +1316,7 @@ static int tsf_voice_envelope_release_samples(struct tsf_voice_envelope* e, floa
 #define TSF_ENV_SILENCE 0.00001f // 100 dB below full scale, the volume envelope is considered silent below this
 
 // The modulation envelope's attack is convex (8.1.2 #26), the curve of the convex modulator source (8.2.4)
-static float tsf_env_convex(float x) { float y = (x >= 1.0f ? 1.0f : (x <= 0.004f ? 0.0f : 1.0f + 0.41666667f * (float)TSF_LOG10(x))); return (y > 0.0f ? y : 0.0f); }
+static float tsf_env_convex(float x) { float y = (x >= 1.0f ? 1.0f : (x <= 0.004f ? 0.0f : 1.0f + 0.18095603f * TSF_LOGF(x))); return (y > 0.0f ? y : 0.0f); }
 
 static void tsf_voice_envelope_nextsegment(struct tsf_voice_envelope* e, short active_segment, float outSampleRate)
 {
@@ -1367,12 +1365,12 @@ static void tsf_voice_envelope_nextsegment(struct tsf_voice_envelope* e, short a
 				{
 					// Linear in dB, the decay time is the time for a 100 dB drop (8.1.2 #36), so it ends early at the sustain level
 					float dbSlope = -TSF_ENV_LN_100DB / e->samplesUntilNextSegment;
-					e->slope = TSF_EXPF(dbSlope);
-					e->slopeBlock = TSF_POWF(e->slope, (float)TSF_RENDER_EFFECTSAMPLEBLOCK); // the factor of a whole block, computed once
+					e->slope = dbSlope; // exponential segments keep the log of the factor per sample
+					e->slopeBlock = TSF_EXPF(dbSlope * TSF_RENDER_EFFECTSAMPLEBLOCK); // the factor of a whole block, computed once
 					e->segmentIsExponential = TSF_TRUE;
 					if (e->parameters.sustain > 0.0f)
 					{
-						e->samplesUntilNextSegment = (int)(TSF_LOG(e->parameters.sustain) / dbSlope);
+						e->samplesUntilNextSegment = (int)(TSF_LOGF(e->parameters.sustain) / dbSlope);
 					}
 				}
 				else
@@ -1402,10 +1400,10 @@ static void tsf_voice_envelope_nextsegment(struct tsf_voice_envelope* e, short a
 			{
 				// Linear in dB, the release time is the time for a 100 dB drop (8.1.2 #38); done once 100 dB below full scale
 				float dbSlope = -TSF_ENV_LN_100DB / e->samplesUntilNextSegment;
-				e->slope = TSF_EXPF(dbSlope);
-				e->slopeBlock = TSF_POWF(e->slope, (float)TSF_RENDER_EFFECTSAMPLEBLOCK);
+				e->slope = dbSlope;
+				e->slopeBlock = TSF_EXPF(dbSlope * TSF_RENDER_EFFECTSAMPLEBLOCK);
 				e->segmentIsExponential = TSF_TRUE;
-				e->samplesUntilNextSegment = (e->level > TSF_ENV_SILENCE ? (int)(TSF_LOG(TSF_ENV_SILENCE / e->level) / dbSlope) + 1 : 0);
+				e->samplesUntilNextSegment = (e->level > TSF_ENV_SILENCE ? (int)(TSF_LOGF(TSF_ENV_SILENCE / e->level) / dbSlope) + 1 : 0);
 			}
 			else
 			{
@@ -1450,7 +1448,7 @@ static void tsf_voice_envelope_process(struct tsf_voice_envelope* e, int numSamp
 		if (step > numSamples) step = numSamples;
 		if (e->slope)
 		{
-			if (e->segmentIsExponential) e->level *= (step == TSF_RENDER_EFFECTSAMPLEBLOCK ? e->slopeBlock : TSF_POWF(e->slope, (float)step));
+			if (e->segmentIsExponential) e->level *= (step == TSF_RENDER_EFFECTSAMPLEBLOCK ? e->slopeBlock : TSF_EXPF(e->slope * (float)step));
 			else e->level += e->slope * (float)step;
 		}
 		e->samplesUntilNextSegment -= step; numSamples -= step;
@@ -1472,7 +1470,7 @@ static void tsf_voice_lowpass_setup(struct tsf_voice_lowpass* e, float Fc)
 // Normalized filter frequency for a cutoff in cents (kept within 20 Hz (the generator's minimum) and 45% of the sample rate)
 static float tsf_lowpass_fc(float cents, float outSampleRate)
 {
-	float hz = 8.176f * TSF_POWF(2.0f, (cents < 1500.0f ? 1500.0f : cents) / 1200.0f);
+	float hz = 8.176f * TSF_EXPF((cents < 1500.0f ? 1500.0f : cents) * (float)TSF_LN2_1200);
 	return (hz < 0.45f * outSampleRate ? hz : 0.45f * outSampleRate) / outSampleRate;
 }
 
@@ -1572,11 +1570,11 @@ static void tsf_voice_lowpass_update(struct tsf_voice_lowpass* l, int fcCents, i
 {
 	// Resonance = peak height above DC, with the DC gain lowered by half of it (8.1.2 #9). A 2-pole lowpass peaks at
 	// Q / sqrt(1 - 1 / (4 Q^2)) above DC, solved for Q here (zero resonance = Butterworth). Bypassed at maximum cutoff without resonance.
-	double peak = TSF_POW(10.0, qCentibels / 200.0);
+	double peak = TSF_EXP(qCentibels * (2.302585092994046 / 200.0));
 	TSF_BOOL wasActive = l->active;
 	l->resonant = (qCentibels > 0);
-	l->QInv = 1.0 / TSF_POW(peak * (peak + TSF_POW(peak * peak - 1.0, 0.5)) * 0.5, 0.5);
-	l->gain = 1.0 / TSF_POW(peak, 0.5);
+	l->QInv = 1.0 / TSF_SQRT(peak * (peak + TSF_SQRT(peak * peak - 1.0)) * 0.5);
+	l->gain = TSF_EXP(qCentibels * (2.302585092994046 / -400.0)); // 1 / sqrt(peak)
 	l->active = (l->resonant || fcCents < 13500);
 	if (!l->active) return;
 	if (!wasActive) l->z1 = l->z2 = 0;
@@ -1589,7 +1587,7 @@ static void tsf_voice_lowpass_update(struct tsf_voice_lowpass* l, int fcCents, i
 // Concave (-40/96 * log10(1 - x)) and convex (1 + 40/96 * log10(x)) curve (8.2.1) for x in 0.0 to 1.0, the output is 0.0 to 1.0
 static float tsf_mod_curve(unsigned type, float x)
 {
-	float y = (type == 1 ? (x >= 1.0f ? 1.0f : -0.41666667f * (float)TSF_LOG10(1.0 - x)) : (x <= 0.0f ? 0.0f : 1.0f + 0.41666667f * (float)TSF_LOG10(x)));
+	float y = (type == 1 ? (x >= 1.0f ? 1.0f : -0.18095603f * TSF_LOGF(1.0f - x)) : (x <= 0.0f ? 0.0f : 1.0f + 0.18095603f * TSF_LOGF(x)));
 	return (y < 0.0f ? 0.0f : (y > 1.0f ? 1.0f : y));
 }
 
@@ -1647,7 +1645,7 @@ static const unsigned char tsf_awe_gen[27] =
 	52, 5, 6, 7, 13,         // 16-20: initial pitch (added to the fine tune), mod LFO, vibrato LFO and mod envelope to pitch, mod LFO to volume
 	8, 9, 10, 11, 15, 16     // 21-26: filter cutoff and resonance, mod LFO and mod envelope to cutoff, chorus, reverb
 };
-static short tsf_awe_round(double x) { return (short)(x < 0 ? x - 0.5 : x + 0.5); }
+static short tsf_awe_round(float x) { return (short)(x < 0.0f ? x - 0.5f : x + 0.5f); }
 static short tsf_awe_nrpn_value(int param, int data)
 {
 	int x = data - 8192, b = data & 0xFF, l = data & 0x7F, sb = (b ^ 0x80) - 0x80, max = 5940;
@@ -1658,8 +1656,8 @@ static short tsf_awe_nrpn_value(int param, int data)
 		case 6: case 12:                                                // holds: 0-8191 ms
 			if (param == 6 || param == 12) max = 8191;
 			if (x > max) x = max;
-			return (x <= 0 ? -12000 : tsf_awe_round(1731.234 * TSF_LOG(x * 0.001))); // timecents
-		case 1: case 3: return (l ? tsf_awe_round(1731.234 * TSF_LOG(l * (0.084 / 8.176))) : -16000); // 0-127: 0.084 Hz steps
+			return (x <= 0 ? -12000 : tsf_awe_round(1731.234f * TSF_LOGF(x * 0.001f))); // timecents
+		case 1: case 3: return (l ? tsf_awe_round(1731.234f * TSF_LOGF(l * (0.084f / 8.176f))) : -16000); // 0-127: 0.084 Hz steps
 		case 8: return (short)((127 - (b > 127 ? 127 : b)) * 1000 / 127); // 0-127: the level, 127 the peak (sustain is a 0.1% decrease)
 		case 14: return tsf_awe_round((127 - (b > 127 ? 127 : b)) * 7.5f); // 0-127: 0.75 dB steps below full level (sustain is in cB)
 		case 16: return (short)x; // -8192-8191: cents
